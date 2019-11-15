@@ -1,0 +1,453 @@
+---
+title: "HW5_COIT_DAVID"
+author: "David Coit"
+date: "11/14/2019"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load relevant libraries, include=FALSE}
+library(tidyverse)
+library(ISLR)
+library(tree)
+library(randomForest)
+library(MASS)
+library(gbm)
+library(mlbench)
+library(RCurl)
+library(tidyverse)
+library(dplyr)
+library(gdata)
+library(rpart)
+library(rpart.plot)
+library(Metrics)
+```
+
+## Homework
+
+1. Attempt a regression tree-based method (not covered in this tutorial) on a reasonable dataset of your choice. Explain the results. 
+
+2. Attempt both a bagging and boosting method on a reasonable dataset of your choice. Explain the results.
+
+
+### Boosting and Bagging, Ozone Data
+```{r}
+# load Ozone dataset as "ozone"
+# This dataset was assembled with the goal of predictine the daily maximum one hour average ozone reading
+# which is imported as "V4"
+data(Ozone)
+ozone <- Ozone
+ozone <- na.omit(ozone)
+rm(Ozone)
+
+# Rename columns based on online annotation
+# https://rdrr.io/cran/mlbench/man/Ozone.html
+names(ozone) <- c("Month",
+                  "DayOfMonth",
+                  "DayOfWeek",
+                  "DailyMaxOzone",
+                  "PressVandenberg",
+                  "WindSpeedLAX",
+                  "HumidityLAX",
+                  "TempSandburg",
+                  "TempElMonte",
+                  "InvHeightLAX",
+                  "PressGradLAXDag",
+                  "InvTempLAX",
+                  "VisibilityLAX")
+
+# Drop month, day of month, day of week from data
+ozone <- ozone[, -c(1:3)]
+```
+
+
+```{r}
+# training / testing split
+set.seed(1618)
+train_size <- floor(0.75 * nrow(ozone))
+train_pos <- sample(seq_len(nrow(ozone)), size = train_size)
+train <- ozone[train_pos, ]
+test <- ozone[-train_pos, ]
+
+```
+
+
+```{r}
+# Random Forest, ozone data
+set.seed(1618)
+rf.ozone = randomForest(DailyMaxOzone~.,
+                        data = ozone, 
+                        subset = train_pos,
+                        na.action = na.omit)
+
+
+
+##Try a range of values for m (number of variables selected at random at each split)
+m = ncol(ozone)-1
+oob.err = double(m)
+test.err = double(m)
+
+#In a loop of mtry from 1 to m, fit the randomForest to the train dataset
+# Sample all possbile m's 
+for(mtry in 1:m){
+  fit = randomForest(DailyMaxOzone~., 
+                     data = ozone, 
+                     subset=train_pos, 
+                     mtry=mtry, 
+                     ntree = 350,
+                     na.action = na.roughfix)
+  oob.err[mtry] = fit$mse[350] ##extract Mean-squared-error 
+  pred = predict(fit, ozone[-train_pos,]) #predict on test dataset
+  test.err[mtry] = with(ozone[-train_pos,], mean( (DailyMaxOzone-pred)^2 )) #compute test error
+}
+
+# Visualize mean squared error vs variables sampled per split
+matplot(1:mtry, cbind(test.err, oob.err), pch = 23, col = c("red", "blue"), type = "b", ylab="Mean Squared Error")
+legend("topright", legend = c("OOB", "Test"), pch = 23, col = c("red", "blue"))
+
+print( (max(oob.err)-min(oob.err)) / min(oob.err) )
+
+
+```
+
+**This is a surprising result, namely that the more variable we sample from per RF split, the greater the test set mean squared error (MSE). Although the error does increase, the range of the MSE is fairly narrow - the difference between the greatest and least values is ~15% of the minimum MSE observed. This may be a result of dropping the categorical variables in the data importation step - if there is actually a seasonal inter-dependency in the behavior of the predicting factors, then that may explain why we see this increasing MSE. I removed these categorical behaviors because I was concerned about months that should have similar seasonal effects on the other variables being assigned divergent values, ie December = 12 and January = 1.**
+
+
+
+
+```{r}
+set.seed(1618)
+#Gradient Boosting Model, Ozone data
+boost.ozone = gbm(DailyMaxOzone ~ ., 
+                  data = train, 
+                  distribution = "gaussian", 
+                  n.trees = 10000, 
+                  shrinkage = 0.01, 
+                  interaction.depth = 4)
+
+#Variable Importance Plot
+summary(boost.ozone)
+
+
+#Visualize important variables of interest
+plot(boost.ozone,i="TempElMonte")
+plot(boost.ozone,i="TempSandburg")
+
+#Predict on test set
+n.trees = seq(from = 100, to = 10000, by = 100)
+predmat = predict(boost.ozone, newdata = ozone[-train_pos,], n.trees = n.trees)
+
+#Visualize Boosting Error Plot
+boost.err = with(ozone[-train_pos,], apply( (predmat - DailyMaxOzone)^2, 2, mean) )
+plot(n.trees, 
+     boost.err, 
+     pch = 23, 
+     ylab = "Mean Squared Error", 
+     xlab = "# Trees", 
+     main = "Boosting Test Error")
+abline(h = min(test.err), col = "red")
+
+
+```
+
+**Again the results we see with the MSE vs. the number of trees is unexpected - we should expect it to decrease rather than increase with more trees. I will reiterate that I believe this behavior is a result of removing the categorical variables. When we plot the predictor variables of interest, we see that the temperature in El Monte has a more direct relationship with visibility **
+
+\n 
+
+**To see if the strange behavior is related to the way the date is represented in this data, I repeat the boosting and bagging performed above, this time with the date information included.**
+
+
+
+```{r}
+# Redo above boosting / bagging, but with categorical month / day values included
+
+# load Ozone dataset as "ozone2"
+# This dataset was assembled with the goal of predictine the daily maximum one hour average ozone2 reading
+# which is imported as "V4"
+data(Ozone)
+ozone2 <- Ozone
+ozone2 <- na.omit(ozone2)
+rm(Ozone)
+
+# Rename columns based on online annotation
+# https://rdrr.io/cran/mlbench/man/Ozone.html
+names(ozone2) <- c("Month",
+                  "DayOfMonth",
+                  "DayOfWeek",
+                  "DailyMaxOzone",
+                  "PressVandenberg",
+                  "WindSpeedLAX",
+                  "HumidityLAX",
+                  "TempSandburg",
+                  "TempElMonte",
+                  "InvHeightLAX",
+                  "PressGradLAXDag",
+                  "InvTempLAX",
+                  "VisibilityLAX")
+
+```
+
+```{r}
+# training / testing split
+set.seed(1618)
+train_size <- floor(0.75 * nrow(ozone2))
+train_pos <- sample(seq_len(nrow(ozone2)), size = train_size)
+train <- ozone2[train_pos, ]
+test <- ozone2[-train_pos, ]
+
+```
+
+
+```{r}
+# random forest with categorical date info included
+set.seed(1618)
+rf.ozone2 = randomForest(DailyMaxOzone~.,
+                        data = ozone2, 
+                        subset = train_pos,
+                        na.action = na.omit)
+
+m = ncol(ozone2)-1
+
+##Try a range of values for m (number of variables selected at random at each split)
+oob.err = double(m)
+test.err = double(m)
+
+#In a loop of mtry from 1 to 6, fit the randomForest to the train dataset
+# Sample all possbile m's 
+
+for(mtry in 1:m){
+  fit = randomForest(DailyMaxOzone~., 
+                     data = ozone2, 
+                     subset=train_pos, 
+                     mtry=mtry, 
+                     ntree = 350,
+                     na.action = na.roughfix)
+  oob.err[mtry] = fit$mse[350] ##extract Mean-squared-error 
+  pred = predict(fit, ozone2[-train_pos,]) #predict on test dataset
+  test.err[mtry] = with(ozone2[-train_pos,], mean( (DailyMaxOzone-pred)^2 )) #compute test error
+}
+
+# Visualize mean squared error vs variables sampled per split
+matplot(1:mtry, cbind(test.err, oob.err), pch = 23, col = c("red", "blue"), type = "b", ylab="Mean Squared Error")
+legend("topright", legend = c("OOB", "Test"), pch = 23, col = c("red", "blue"))
+
+print( (max(oob.err)-min(oob.err)) / min(oob.err) )
+
+```
+
+**Here we see our surprising result again, this time with a larger relative range in the observed MSE. This lends support to the idea that the date information as represented is just adding noise to the model input.**
+
+
+```{r}
+set.seed(1618)
+#Gradient Boosting Model, ozone data with categorical data info
+boost.ozone2 = gbm(DailyMaxOzone ~ ., 
+                  data = train, 
+                  distribution = "gaussian", 
+                  n.trees = 10000, 
+                  shrinkage = 0.01, 
+                  interaction.depth = 4)
+
+#Variable Importance Plot
+summary(boost.ozone2)
+
+
+#Visualize important variables of interest
+plot(boost.ozone2,i="TempElMonte")
+plot(boost.ozone2,i="TempSandburg")
+
+#Predict on test set
+n.trees = seq(from = 100, to = 10000, by = 100)
+predmat = predict(boost.ozone2, newdata = ozone2[-train_pos,], n.trees = n.trees)
+
+#Visualize Boosting Error Plot
+boost.err = with(ozone2[-train_pos,], apply( (predmat - DailyMaxOzone)^2, 2, mean) )
+plot(n.trees, boost.err, pch = 23, ylab = "Mean Squared Error", xlab = "# Trees", main = "Boosting Test Error")
+abline(h = min(test.err), col = "red")
+```
+
+### Tree-Based Regression, Ozone Data
+```{r}
+#Regression tree based method
+# Tree with categorical day / month columns
+set.seed(1618)
+tree.ozone <-  rpart(
+  formula = DailyMaxOzone ~ .,
+  data = ozone[train_pos,],
+  method = "anova"
+)
+rpart.plot(tree.ozone, roundint = FALSE)
+
+# test model
+pred <- predict(tree.ozone, newdata = ozone[-train_pos,])
+test.err = with(ozone[-train_pos,], mean( (DailyMaxOzone-pred)^2 )) #compute test error
+
+# Calculate RMSE of model predictions on test set
+ozoneRMSE = rmse(ozone[-train_pos,]$DailyMaxOzone, pred)
+print(ozoneRMSE)
+
+```
+
+
+```{r}
+# Regression ree with categorical day / month columns retained
+
+set.seed(1618)
+tree.ozone2 <-  rpart(
+  formula = DailyMaxOzone ~ .,
+  data = ozone2[train_pos,],
+  method = "anova"
+)
+rpart.plot(tree.ozone2, roundint = FALSE)
+
+# test model
+pred <- predict(tree.ozone2, newdata = ozone2[-train_pos,])
+test.err = with(ozone2[-train_pos,], mean( (DailyMaxOzone-pred)^2 )) #compute test error
+
+# Calculate RMSE of model predictions on test set
+ozone2RMSE = rmse(ozone2[-train_pos,]$DailyMaxOzone, pred)
+print(ozone2RMSE)
+
+```
+**The fact that the RMSE of this regression tree is greater with the categorical date variables included is not surprising. I think some transformation of the date data might prove useful, such as transforming the month and day into a distance from the summer solstice  (thus giving the same value to late December / early January eg). However such an exploration is outside the scope of this assignment.**
+
+
+### Concrete Compressive Strength Data
+
+**I wanted to try these methods on a dataset that didn't have this suspected time-dependent behavior with an odd organization of the time data. To that end, I repeat the work from above, but with a more straightforward regression task provide by the concrete compressive strength dataset from the UCI machine learning repository.**
+
+```{r}
+# Import the concrete compressive strength dataset from the UCI ML repo
+# The goal of this dataset is to predict the compressive strength of concrete based
+# on its material composition and age
+URL <- "http://archive.ics.uci.edu/ml/machine-learning-databases/concrete/compressive/"
+source_file_name = ("Concrete_Data.xls")
+path = paste0(URL,source_file_name)
+
+concrete <- read.xls(path,
+                 header = TRUE)
+
+names(concrete) <- c("CementComp1",
+                 "BFSlag",
+                 "FlyAsh",
+                 "Water",
+                 "Superplasticity",
+                 "CoarseAgg",
+                 "FineAgg",
+                 "Age",
+                 "CompStr")
+
+```
+
+
+```{r}
+# concrete training / testing split
+set.seed(1618)
+train_size <- floor(0.75 * nrow(concrete))
+train_pos <- sample(seq_len(nrow(concrete)), size = train_size)
+train <- concrete[train_pos, ]
+test <- concrete[-train_pos, ]
+```
+
+
+### Tree-Based Regression, Concrete Data
+```{r}
+# Tree with categorical day / month columns
+set.seed(1618)
+tree.concrete <-  rpart(
+  formula = CompStr ~ .,
+  data = concrete[train_pos,],
+  method = "anova"
+)
+rpart.plot(tree.concrete, roundint = FALSE)
+
+# test model
+pred <- predict(tree.concrete, newdata = concrete[-train_pos,])
+test.err = with(concrete[-train_pos,], mean( (CompStr-pred)^2 )) #compute test error
+
+# Calculate RMSE of model predictions on test set
+concreteRMSE = rmse(concrete[-train_pos,]$CompStr, pred)
+print(concreteRMSE)
+```
+\n 
+
+**The tree regression performed above suggests that concrete age is the most important predictor of compressive strength. After age, the amount of cement component 1 in kg/m3.**
+
+
+
+### Boosting and Bagging, Concrete Data
+```{r}
+set.seed(1618)
+# Random Forest
+
+rf.concrete = randomForest(CompStr~.,
+                        data = concrete, 
+                        subset = train_pos,
+                        na.action = na.omit)
+
+m = ncol(concrete)-1
+##Try a range of values for m (number of variables selected at random at each split)
+oob.err = double(m)
+test.err = double(m)
+
+#In a loop of mtry from 1 to 6, fit the randomForest to the train dataset
+# Sample all possbile m's 
+
+for(mtry in 1:m){
+  fit = randomForest(CompStr~., 
+                     data = concrete, 
+                     subset=train_pos, 
+                     mtry=mtry, 
+                     ntree = 350,
+                     na.action = na.roughfix)
+  oob.err[mtry] = fit$mse[350] ##extract Mean-squared-error 
+  pred = predict(fit, concrete[-train_pos,]) #predict on test dataset
+  test.err[mtry] = with(concrete[-train_pos,], mean( (CompStr-pred)^2 )) #compute test error
+}
+
+# Visualize mean squared error vs variables sampled per split
+matplot(1:mtry, cbind(test.err, oob.err), pch = 23, col = c("red", "blue"), type = "b", ylab="Mean Squared Error")
+legend("topright", legend = c("OOB", "Test"), pch = 23, col = c("red", "blue"))
+
+```
+
+\n 
+
+**In contrast with the example above with the ozone data, the mean square error vs. M behavior we see here is much more what we expect to see. Because this is a much more straightforward regression task without the possible time-dependent behavior of the variables, we don't observe the increasing MSE.**
+
+
+```{r}
+set.seed(1618)
+#Gradient Boosting Model
+boost.concrete = gbm(CompStr ~ ., 
+                  data = train, 
+                  distribution = "gaussian", 
+                  n.trees = 10000, 
+                  shrinkage = 0.01, 
+                  interaction.depth = 4)
+
+#Variable Importance Plot
+summary(boost.concrete)
+
+
+#Visualize important variables of interest
+plot(boost.concrete,i="Age")
+plot(boost.concrete,i="CementComp1")
+
+#Predict on test set
+n.trees = seq(from = 100, to = 10000, by = 100)
+predmat = predict(boost.concrete, newdata = concrete[-train_pos,], n.trees = n.trees)
+
+#Visualize Boosting Error Plot
+boost.err = with(concrete[-train_pos,], apply( (predmat - CompStr)^2, 2, mean) )
+plot(n.trees, boost.err, pch = 23, ylab = "Mean Squared Error", xlab = "# Trees", main = "Boosting Test Error", cex = 0.6)
+abline(h = min(boost.err), col = "red")
+```
+
+\n 
+
+**The results from this boosting model are in agreement with the results from the tree-based regression above. The Three most important variables were again identified as being concrete age, cement component one content, and water content. The boosting test error is also much more "well-behaved" than with the ozone data, exhibiting a monotonic and seemingly asymptotic approach to the minimum MSE. As for the relationship of the predictor variables to the response variable compressive strength "CompStr", there is a fairly direct relationship between cement component 1 content and compressive strength. Concrete age has a strong effect on compressive strength before ~100 days, after the effect size does not appear to change. This is consistent with my non-technical understanding that concrete needs time to cure before attaining full strength. Our result from this boosting model is consistent with the tree model above. In fact, in the tree model the first split was in determining whether or not the concrete was older than 48 days. A cursory Google search indicates that concrete takes up to 28 days to cure fully.**
+**https://www.everreadymix.co.uk/news/long-take-concrete-cure/**
+
